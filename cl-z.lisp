@@ -7,15 +7,13 @@
 
 (in-package :cl-z)
 
-(defun load-library ()
-  (eval-when (:compile-toplevel :load-toplevel :execute)
-    (cffi:define-foreign-library zlib
-      (:unix (:or "libz.so.1" "libz.so"))
-      (:windows (:or "zlib1.dll" "zlib.dll"))
-      (t (:default "libz"))))
-  (cffi:use-foreign-library zlib))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (cffi:define-foreign-library zlib
+    (:unix (:or "libz.so.1" "libz.so"))
+    (:windows (:or "zlib1.dll" "zlib.dll"))
+    (t (:default "libz"))))
 
-(load-library)
+(cffi:use-foreign-library zlib)
 
 (cffi:defcstruct z-stream
     "zlib stream"
@@ -29,7 +27,7 @@
 
   (msg :pointer)      ; last error message, NULL if no error
   (state :pointer)    ; not visible by applications
-  
+
   (zalloc :pointer)   ; used to allocate the internal state
   (zfree :pointer)    ; used to free the internal state
   (opaque :pointer)   ; private data object passed to zalloc and zfree
@@ -51,13 +49,7 @@
   (:buf-error -5)
   (:version-error -6))
 
-(defconstant +zlib-version+ "1.2.3.4")
-
-(cffi:defcfun (deflate-init "deflateInit_") z-error
-  (stream z-stream)
-  (level :int)
-  (version :string)
-  (stream-size :int))
+(defparameter +zlib-version+ "1.2.3.4")
 
 (cffi:defcenum z-flush
     "Allowed flush values; see deflate() and inflate() below for details"
@@ -69,6 +61,12 @@
   (:block 5)
   (:trees 6))
 
+(cffi:defcfun (deflate-init "deflateInit_") z-error
+  (stream z-stream)
+  (level :int)
+  (version :string)
+  (stream-size :int))
+
 (cffi:defcfun (deflate "deflate") z-error
   (stream z-stream)
   (flush z-flush))
@@ -76,10 +74,22 @@
 (cffi:defcfun (deflate-end "deflateEnd") z-error
   (stream z-stream))
 
+(cffi:defcfun (inflate-init "inflateInit_") z-error
+  (stream z-stream)
+  (version :string)
+  (stream-size :int))
+
+(cffi:defcfun (inflate "inflate") z-error
+  (stream z-stream)
+  (flush z-flush))
+
+(cffi:defcfun (inflate-end "inflateEnd") z-error
+  (stream z-stream))
+
 (defun read-to-foreign-buffer (stream buffer size)
   (let* ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8)))
 	 (end (read-sequence tmp-buffer stream)))
-	 
+
     (loop
        for i from 0 below end
        do (setf (cffi:mem-aref buffer :uint8 i) (aref tmp-buffer i)))
@@ -93,7 +103,11 @@
        do (setf (aref tmp-buffer i) (cffi:mem-aref buffer :uint8 i)))
     (write-sequence tmp-buffer stream)))
 
-(defun compress (input-stream output-stream compression-level)
+(defun process (input-stream output-stream
+		init-func
+		proc-func
+		end-func)
+
   (cffi:with-foreign-objects ((stream 'z-stream)
 			      (input-buffer :uint8 16384)
 			      (output-buffer :uint8 16384))
@@ -102,7 +116,7 @@
 	  (cffi:foreign-slot-value stream 'z-stream 'zfree) (cffi:null-pointer)
 	  (cffi:foreign-slot-value stream 'z-stream 'opaque) (cffi:null-pointer))
 
-    (let ((err (deflate-init stream compression-level +zlib-version+ (cffi:foreign-type-size 'z-stream))))
+    (let ((err (funcall init-func stream +zlib-version+ (cffi:foreign-type-size 'z-stream))))
       (unless (eq err :ok)
 	(error "~A" err)))
 
@@ -110,34 +124,33 @@
        (let ((end (read-to-foreign-buffer input-stream input-buffer 16384)))
 	 (when (zerop end)
 	   (return))
-	 
+
 	 (setf (cffi:foreign-slot-value stream 'z-stream 'next-in) input-buffer
 	       (cffi:foreign-slot-value stream 'z-stream 'avail-in) end)
-	 
+
 	 (loop
 	    while (/= 0 (cffi:foreign-slot-value stream 'z-stream 'avail-in))
 	    do
-	      
+
 	      (setf (cffi:foreign-slot-value stream 'z-stream 'next-out) output-buffer
 		    (cffi:foreign-slot-value stream 'z-stream 'avail-out) 16384)
-	      
-	      (let ((err (deflate stream :no-flush)))
-		(write-foreign-buffer output-stream 
+
+	      (let ((err (funcall proc-func stream :no-flush)))
+		(write-foreign-buffer output-stream
 				      output-buffer
 				      (-
 				       (cffi:pointer-address (cffi:foreign-slot-value stream 'z-stream 'next-out))
 				       (cffi:pointer-address output-buffer)))
-		
+
 		(unless (eq err :ok)
 		  (return))))))
 
-    ;; Finish the stream
     (loop
        (setf (cffi:foreign-slot-value stream 'z-stream 'next-out) output-buffer
 	     (cffi:foreign-slot-value stream 'z-stream 'avail-out) 16384)
-       
-       (let ((err (deflate stream :finish)))
-	 (write-foreign-buffer output-stream 
+
+       (let ((err (funcall proc-func stream :finish)))
+	 (write-foreign-buffer output-stream
 			       output-buffer
 			       (-
 				(cffi:pointer-address (cffi:foreign-slot-value stream 'z-stream 'next-out))
@@ -145,7 +158,37 @@
 	 (when (eq err :stream-end)
 	   (return))))
 
-    (deflate-end stream)))
+    (funcall end-func stream)))
 
-(export 'compress)
+(defun compress-stream (input-stream output-stream &key (compression-level -1))
+  (process input-stream
+	   output-stream
+	   (lambda (stream version size) (deflate-init stream compression-level version size))
+	   #'deflate
+	   #'deflate-end))
+
+(export 'compress-stream)
+
+(defun uncompress-stream (input-stream output-stream)
+  (process input-stream
+	   output-stream
+	   #'inflate-init
+	   #'inflate
+	   #'inflate-end))
+
+(export 'uncompress-stream)
+
+(defun compress-sequence (input &key (compression-level -1) (start 0) end)
+  (flexi-streams:with-output-to-sequence (output-stream :element-type '(unsigned-byte 8))
+    (flexi-streams:with-input-from-sequence (input-stream input :start start :end end)
+      (compress-stream input-stream output-stream :compression-level compression-level))))
+
+(export 'compress-sequence)
+
+(defun uncompress-sequence (input &key (start 0) end)
+  (flexi-streams:with-output-to-sequence (output-stream :element-type '(unsigned-byte 8))
+    (flexi-streams:with-input-from-sequence (input-stream input :start start :end end)
+      (uncompress-stream input-stream output-stream))))
+
+(export 'uncompress-sequence)
 

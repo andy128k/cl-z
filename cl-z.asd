@@ -12,6 +12,6 @@
   :version "0.10.2.2"
   :author "Andrey Kutejko <andy128k@gmail.com>"
   :licence "LGPL"
-  :depends-on (:cffi)
+  :depends-on (:cffi :flexi-streams)
   :components ((:file "cl-z")))
 
