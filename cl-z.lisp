@@ -86,7 +86,24 @@
 (cffi:defcfun (inflate-end "inflateEnd") z-error
   (stream z-stream))
 
-(defun read-to-foreign-buffer (stream buffer size)
+(defclass vector-input ()
+  ((vector :initarg :vector :accessor vector-input-vector)
+   (pos :initarg :start :accessor vector-input-pos)
+   (end :initarg :end :accessor vector-input-end)))
+
+(defgeneric read-to-foreign-buffer (stream buffer size))
+
+(defmethod read-to-foreign-buffer ((stream vector-input) buffer size)
+  (loop
+     for i from 0 below size
+     while (< (vector-input-pos stream) (vector-input-end stream))
+     do
+       (setf (cffi:mem-aref buffer :uint8 i)
+	     (aref (vector-input-vector stream) (vector-input-pos stream)))
+       (incf (vector-input-pos stream))
+     finally (return i)))
+
+(defmethod read-to-foreign-buffer ((stream stream) buffer size)
   (let* ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8)))
 	 (end (read-sequence tmp-buffer stream)))
 
@@ -96,7 +113,14 @@
 
     end))
 
-(defun write-foreign-buffer (stream buffer size)
+(defgeneric write-foreign-buffer (stream buffer size))
+
+(defmethod write-foreign-buffer ((stream vector) buffer size)
+  (loop
+     for i from 0 below size
+     do (vector-push-extend (cffi:mem-aref buffer :uint8 i) stream)))
+
+(defmethod write-foreign-buffer ((stream stream) buffer size)
   (let ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8))))
     (loop
        for i from 0 below size
@@ -178,17 +202,19 @@
 
 (export 'uncompress-stream)
 
-(defun compress-sequence (input &key (compression-level -1) (start 0) end)
-  (flexi-streams:with-output-to-sequence (output-stream :element-type '(unsigned-byte 8))
-    (flexi-streams:with-input-from-sequence (input-stream input :start start :end end)
-      (compress-stream input-stream output-stream :compression-level compression-level))))
+(defun compress-vector (input &key (compression-level -1) (start 0) end)
+  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8)))
+	(in (make-instance 'vector-input :vector input :start start :end (or end (length input)))))
+    (compress-stream in out :compression-level compression-level)
+    out))
 
-(export 'compress-sequence)
+(export 'compress-vector)
 
-(defun uncompress-sequence (input &key (start 0) end)
-  (flexi-streams:with-output-to-sequence (output-stream :element-type '(unsigned-byte 8))
-    (flexi-streams:with-input-from-sequence (input-stream input :start start :end end)
-      (uncompress-stream input-stream output-stream))))
+(defun uncompress-vector (input &key (start 0) end)
+  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8)))
+	(in (make-instance 'vector-input :vector input :start start :end (or end (length input)))))
+    (uncompress-stream in out)
+    out))
 
-(export 'uncompress-sequence)
+(export 'uncompress-vector)
 
