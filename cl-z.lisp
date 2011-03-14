@@ -9,7 +9,8 @@
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (cffi:define-foreign-library zlib
-    (:unix (:or "libz.so.1" "libz.so"))
+    ((:and :unix (:not :darwin)) (:or "libz.so.1" "libz.so"))
+    (:darwin (:or "libz.1.dylib" "libz.dylib"))
     (:windows (:or "zlib1.dll" "zlib.dll"))
     (t (:default "libz"))))
 
