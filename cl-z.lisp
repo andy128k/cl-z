@@ -92,6 +92,11 @@
    (pos :initarg :start :accessor vector-input-pos)
    (end :initarg :end :accessor vector-input-end)))
 
+(defstruct vector-output ()
+  vector
+  (pos -1))
+
+
 (defgeneric read-to-foreign-buffer (stream buffer size))
 
 (defmethod read-to-foreign-buffer ((stream vector-input) buffer size)
@@ -117,16 +122,25 @@
 (defgeneric write-foreign-buffer (stream buffer size))
 
 (defmethod write-foreign-buffer ((stream vector) buffer size)
+      (loop
+         for i from 0 below size
+         do (vector-push-extend (cffi:mem-aref buffer :uint8 i) stream)))
+
+(defmethod write-foreign-buffer ((stream vector-output) buffer size)
   (loop
      for i from 0 below size
-     do (vector-push-extend (cffi:mem-aref buffer :uint8 i) stream)))
+     do (setf (aref (vector-output-vector stream)
+                    (incf (vector-output-pos stream)))
+              (cffi:mem-aref buffer :uint8 i))))
+
 
 (defmethod write-foreign-buffer ((stream stream) buffer size)
-  (let ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8))))
-    (loop
-       for i from 0 below size
-       do (setf (aref tmp-buffer i) (cffi:mem-aref buffer :uint8 i)))
-    (write-sequence tmp-buffer stream)))
+  (when (not (zerop size))
+    (let ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8))))
+      (loop
+         for i from 0 below size
+         do (setf (aref tmp-buffer i) (cffi:mem-aref buffer :uint8 i)))
+      (write-sequence tmp-buffer stream))))
 
 (defun process (input-stream output-stream
 		init-func
@@ -211,11 +225,24 @@
 
 (export 'compress-vector)
 
-(defun uncompress-vector (input &key (start 0) end)
-  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8)))
+(defun uncompress-vector (input &key (start 0) end (size 0))
+  (let ((out (if (zerop size)
+                 (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8))
+                 (make-vector-output :vector (make-array size :element-type '(unsigned-byte 8)))))
 	(in (make-instance 'vector-input :vector input :start start :end (or end (length input)))))
     (uncompress-stream in out)
-    out))
+    (if (zerop size)
+        out
+        (vector-output-vector out))))
 
 (export 'uncompress-vector)
 
+
+(defun compress-vector-to-stream (input output &key (compression-level -1) (start 0) end)
+  (let ((in (make-instance 'vector-input :vector input  :start start :end (or end (length input)))))
+    (compress-stream in output :compression-level compression-level)))
+
+(defun uncompress-stream-to-vector (input &key (size 0))
+  (let ((out (make-array size :adjustable (not (zerop size)) :fill-pointer 0 :element-type '(unsigned-byte 8))))
+    (uncompress-stream input out)
+    out))
