@@ -63,34 +63,39 @@
   (:trees 6))
 
 (cffi:defcfun (deflate-init "deflateInit_") z-error
-  (stream z-stream)
+  (stream (:pointer (:struct z-stream)))
   (level :int)
   (version :string)
   (stream-size :int))
 
 (cffi:defcfun (deflate "deflate") z-error
-  (stream z-stream)
+  (stream (:pointer (:struct z-stream)))
   (flush z-flush))
 
 (cffi:defcfun (deflate-end "deflateEnd") z-error
-  (stream z-stream))
+  (stream (:pointer (:struct z-stream))))
 
 (cffi:defcfun (inflate-init "inflateInit_") z-error
-  (stream z-stream)
+  (stream (:pointer (:struct z-stream)))
   (version :string)
   (stream-size :int))
 
 (cffi:defcfun (inflate "inflate") z-error
-  (stream z-stream)
+  (stream (:pointer (:struct z-stream)))
   (flush z-flush))
 
 (cffi:defcfun (inflate-end "inflateEnd") z-error
-  (stream z-stream))
+  (stream (:pointer (:struct z-stream))))
 
 (defclass vector-input ()
   ((vector :initarg :vector :accessor vector-input-vector)
    (pos :initarg :start :accessor vector-input-pos)
    (end :initarg :end :accessor vector-input-end)))
+
+(defstruct vector-output ()
+  vector
+  (pos -1))
+
 
 (defgeneric read-to-foreign-buffer (stream buffer size))
 
@@ -117,31 +122,40 @@
 (defgeneric write-foreign-buffer (stream buffer size))
 
 (defmethod write-foreign-buffer ((stream vector) buffer size)
+      (loop
+         for i from 0 below size
+         do (vector-push-extend (cffi:mem-aref buffer :uint8 i) stream)))
+
+(defmethod write-foreign-buffer ((stream vector-output) buffer size)
   (loop
      for i from 0 below size
-     do (vector-push-extend (cffi:mem-aref buffer :uint8 i) stream)))
+     do (setf (aref (vector-output-vector stream)
+                    (incf (vector-output-pos stream)))
+              (cffi:mem-aref buffer :uint8 i))))
+
 
 (defmethod write-foreign-buffer ((stream stream) buffer size)
-  (let ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8))))
-    (loop
-       for i from 0 below size
-       do (setf (aref tmp-buffer i) (cffi:mem-aref buffer :uint8 i)))
-    (write-sequence tmp-buffer stream)))
+  (when (not (zerop size))
+    (let ((tmp-buffer (make-array (list size) :element-type '(unsigned-byte 8))))
+      (loop
+         for i from 0 below size
+         do (setf (aref tmp-buffer i) (cffi:mem-aref buffer :uint8 i)))
+      (write-sequence tmp-buffer stream))))
 
 (defun process (input-stream output-stream
 		init-func
 		proc-func
 		end-func)
 
-  (cffi:with-foreign-objects ((stream 'z-stream)
+  (cffi:with-foreign-objects ((stream '(:struct z-stream))
 			      (input-buffer :uint8 16384)
 			      (output-buffer :uint8 16384))
 
-    (setf (cffi:foreign-slot-value stream 'z-stream 'zalloc) (cffi:null-pointer)
-	  (cffi:foreign-slot-value stream 'z-stream 'zfree) (cffi:null-pointer)
-	  (cffi:foreign-slot-value stream 'z-stream 'opaque) (cffi:null-pointer))
+    (setf (cffi:foreign-slot-value stream '(:struct z-stream) 'zalloc) (cffi:null-pointer)
+	  (cffi:foreign-slot-value stream '(:struct z-stream) 'zfree) (cffi:null-pointer)
+	  (cffi:foreign-slot-value stream '(:struct z-stream) 'opaque) (cffi:null-pointer))
 
-    (let ((err (funcall init-func stream +zlib-version+ (cffi:foreign-type-size 'z-stream))))
+    (let ((err (funcall init-func stream +zlib-version+ (cffi:foreign-type-size '(:struct z-stream)))))
       (unless (eq err :ok)
 	(error "~A" err)))
 
@@ -150,35 +164,35 @@
 	 (when (zerop end)
 	   (return))
 
-	 (setf (cffi:foreign-slot-value stream 'z-stream 'next-in) input-buffer
-	       (cffi:foreign-slot-value stream 'z-stream 'avail-in) end)
+	 (setf (cffi:foreign-slot-value stream '(:struct z-stream) 'next-in) input-buffer
+	       (cffi:foreign-slot-value stream '(:struct z-stream) 'avail-in) end)
 
 	 (loop
-	    while (/= 0 (cffi:foreign-slot-value stream 'z-stream 'avail-in))
+	    while (/= 0 (cffi:foreign-slot-value stream '(:struct z-stream) 'avail-in))
 	    do
 
-	      (setf (cffi:foreign-slot-value stream 'z-stream 'next-out) output-buffer
-		    (cffi:foreign-slot-value stream 'z-stream 'avail-out) 16384)
+	      (setf (cffi:foreign-slot-value stream '(:struct z-stream) 'next-out) output-buffer
+		    (cffi:foreign-slot-value stream '(:struct z-stream) 'avail-out) 16384)
 
 	      (let ((err (funcall proc-func stream :no-flush)))
 		(write-foreign-buffer output-stream
 				      output-buffer
 				      (-
-				       (cffi:pointer-address (cffi:foreign-slot-value stream 'z-stream 'next-out))
+				       (cffi:pointer-address (cffi:foreign-slot-value stream '(:struct z-stream) 'next-out))
 				       (cffi:pointer-address output-buffer)))
 
 		(unless (eq err :ok)
 		  (return))))))
 
     (loop
-       (setf (cffi:foreign-slot-value stream 'z-stream 'next-out) output-buffer
-	     (cffi:foreign-slot-value stream 'z-stream 'avail-out) 16384)
+       (setf (cffi:foreign-slot-value stream '(:struct z-stream) 'next-out) output-buffer
+	     (cffi:foreign-slot-value stream '(:struct z-stream) 'avail-out) 16384)
 
        (let ((err (funcall proc-func stream :finish)))
 	 (write-foreign-buffer output-stream
 			       output-buffer
 			       (-
-				(cffi:pointer-address (cffi:foreign-slot-value stream 'z-stream 'next-out))
+				(cffi:pointer-address (cffi:foreign-slot-value stream '(:struct z-stream) 'next-out))
 				(cffi:pointer-address output-buffer)))
 	 (when (eq err :stream-end)
 	   (return))))
@@ -211,11 +225,24 @@
 
 (export 'compress-vector)
 
-(defun uncompress-vector (input &key (start 0) end)
-  (let ((out (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8)))
+(defun uncompress-vector (input &key (start 0) end (size 0))
+  (let ((out (if (zerop size)
+                 (make-array 0 :adjustable t :fill-pointer 0 :element-type '(unsigned-byte 8))
+                 (make-vector-output :vector (make-array size :element-type '(unsigned-byte 8)))))
 	(in (make-instance 'vector-input :vector input :start start :end (or end (length input)))))
     (uncompress-stream in out)
-    out))
+    (if (zerop size)
+        out
+        (vector-output-vector out))))
 
 (export 'uncompress-vector)
 
+
+(defun compress-vector-to-stream (input output &key (compression-level -1) (start 0) end)
+  (let ((in (make-instance 'vector-input :vector input  :start start :end (or end (length input)))))
+    (compress-stream in output :compression-level compression-level)))
+
+(defun uncompress-stream-to-vector (input &key (size 0))
+  (let ((out (make-array size :adjustable (not (zerop size)) :fill-pointer 0 :element-type '(unsigned-byte 8))))
+    (uncompress-stream input out)
+    out))
